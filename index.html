@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <base href="https://cdn.jsdelivr.net/gh/un-zynq/g6/hollow-knight/" />
+
+        <style>
+            html,
+            body {
+                margin: 0;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                background: #000;
+                font-family: sans-serif;
+                contain: strict;
+                touch-action: none;
+                image-rendering: -webkit-optimize-contrast;
+                image-rendering: crisp-edges;
+            }
+            #container {
+                position: relative;
+                width: 100vw;
+                height: 100vh;
+            }
+            canvas {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                display: block;
+                image-rendering: pixelated;
+                will-change: contents;
+            }
+            #snapshot-canvas {
+                z-index: 5;
+                pointer-events: none;
+                display: none;
+                filter: brightness(0.5);
+            }
+            #unity-canvas {
+                z-index: 1;
+            }
+            #loading {
+                position: fixed;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 100;
+                background: #000 url("./start/HK_header.webp") no-repeat center
+                    center;
+                background-size: cover;
+            }
+            .bar-container {
+                width: 280px;
+                height: 2px;
+                background: rgba(255, 255, 255, 0.1);
+            }
+            .fill {
+                height: 100%;
+                width: 100%;
+                transform: scaleX(0);
+                transform-origin: left;
+                background: #fff;
+                transition: transform 0.1s linear;
+            }
+            #customAlert {
+                display: none !important;
+                visibility: hidden !important;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="loading">
+            <div class="bar-container"><div class="fill" id="bar"></div></div>
+        </div>
+        <div id="container">
+            <canvas id="unity-canvas"></canvas>
+            <canvas id="snapshot-canvas"></canvas>
+        </div>
+        <script>
+            const CONFIG = { partsCount: 42, concurrency: 8 };
+
+            const unityCanvas = document.getElementById("unity-canvas");
+            const snapCanvas = document.getElementById("snapshot-canvas");
+            const barFill = document.getElementById("bar");
+            let unityInstance = null;
+
+            (function () {
+                const OrigAC = window.AudioContext || window.webkitAudioContext;
+                window.AudioContext = window.webkitAudioContext = function (
+                    opts,
+                ) {
+                    const ctx = new OrigAC({
+                        latencyHint: "interactive",
+                        ...opts,
+                    });
+                    window._ctx = ctx;
+                    return ctx;
+                };
+            })();
+
+            function setPause(state) {
+                if (!unityInstance) return;
+                if (state) {
+                    const ctx = snapCanvas.getContext("2d");
+                    snapCanvas.width = unityCanvas.clientWidth;
+                    snapCanvas.height = unityCanvas.clientHeight;
+                    try {
+                        ctx.drawImage(unityCanvas, 0, 0);
+                    } catch (e) {}
+                    snapCanvas.style.display = "block";
+                    unityCanvas.style.visibility = "hidden";
+                    unityInstance.SendMessage("GameManager", "SetPaused", 1);
+                } else {
+                    snapCanvas.style.display = "none";
+                    unityCanvas.style.visibility = "visible";
+                    unityInstance.SendMessage("GameManager", "SetPaused", 0);
+                }
+            }
+
+            window.addEventListener("blur", () => setPause(true));
+            window.addEventListener("focus", () => setPause(false));
+
+            async function loadGame() {
+                let chunks = [];
+                for (
+                    let i = 1;
+                    i <= CONFIG.partsCount;
+                    i += CONFIG.concurrency
+                ) {
+                    const batch = Array.from(
+                        {
+                            length: Math.min(
+                                CONFIG.concurrency,
+                                CONFIG.partsCount - i + 1,
+                            ),
+                        },
+                        (_, k) =>
+                            fetch(`./Build/hk.data.part${i + k}`).then((r) =>
+                                r.arrayBuffer(),
+                            ),
+                    );
+                    const results = await Promise.all(batch);
+                    results.forEach((buf, idx) => {
+                        chunks[i + idx - 1] = new Uint8Array(buf);
+                    });
+                    barFill.style.transform = `scaleX(${((i + batch.length) / CONFIG.partsCount) * 0.85})`;
+                }
+
+                const totalSize = chunks.reduce((a, c) => a + c.length, 0);
+                let combined = new Uint8Array(totalSize);
+                let pos = 0;
+                for (let i = 0; i < chunks.length; i++) {
+                    combined.set(chunks[i], pos);
+                    pos += chunks[i].length;
+                    chunks[i] = null;
+                }
+                chunks = null;
+
+                const url = URL.createObjectURL(new Blob([combined]));
+                combined = null;
+
+                const script = document.createElement("script");
+                script.src = "./Build/hk.loader.js";
+                document.body.appendChild(script);
+
+                script.onload = () => {
+                    createUnityInstance(
+                        unityCanvas,
+                        {
+                            dataUrl: url,
+                            frameworkUrl: "Build/hk.framework.js",
+                            codeUrl:
+                                "https://raw.githubusercontent.com/un-zynq/g6/refs/heads/main/hollow-knight/Build/hk.wasm",
+                            streamingAssetsUrl: "./Build/StreamingAssets",
+                            companyName: "Team Cherry",
+                            productName: "Hollow Knight",
+                            devicePixelRatio: 1,
+                            powerPreference: "high-performance",
+                        },
+                        (p) => {
+                            barFill.style.transform = `scaleX(${0.85 + p * 0.15})`;
+                        },
+                    ).then((ui) => {
+                        unityInstance = ui;
+                        URL.revokeObjectURL(url);
+                        document.getElementById("loading").remove();
+                    });
+                };
+            }
+
+            loadGame().catch(() => console.log("Init failed"));
+
+            window.alert = () => {};
+            new MutationObserver((m) =>
+                document.getElementById("customAlert")?.remove(),
+            ).observe(document, { childList: true, subtree: true });
+        </script>
+    </body>
+</html>
